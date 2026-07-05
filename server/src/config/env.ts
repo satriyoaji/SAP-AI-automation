@@ -1,0 +1,28 @@
+import dotenv from "dotenv";
+import { z } from "zod";
+
+dotenv.config();
+
+const booleanFromEnv = z.preprocess((value) => {
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(normalized)) return true;
+    if (["0", "false", "no", "off"].includes(normalized)) return false;
+  }
+  return value;
+}, z.boolean());
+
+const envSchema = z.object({
+  NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
+  PORT: z.string().default("3001"),
+  DATABASE_URL: z.string().default("./data/db_edited.sqlite"),
+  OPENAI_API_KEY: z.string().optional().default(""),
+  GOOGLE_CLIENT_ID: z.string().optional(),
+  GOOGLE_CLIENT_SECRET: z.string().optional(),
+  GOOGLE_REDIRECT_URI: z.string().default("http://localhost:3001/api/auth/google/callback"),
+  JWT_SECRET: z.string().default("your-secret-key-change-in-production"),
+  CORS_ORIGIN: z.string().default("http://localhost:5173"),
+  SAP_INSECURE_TLS: booleanFromEnv.default(false),
+});
+
+export const env = envSchema.parse(process.env);
