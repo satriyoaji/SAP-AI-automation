@@ -55,6 +55,7 @@ GOOGLE_CLIENT_SECRET=your-google-client-secret
 GOOGLE_REDIRECT_URI=http://localhost:3001/api/email/auth/google/callback
 JWT_SECRET=your-jwt-secret
 CORS_ORIGIN=http://localhost:5173
+SAP_INSECURE_TLS=true
 ```
 
 > Only `OPENAI_API_KEY` is required to start. Gmail (`GOOGLE_*`) and SAP settings are optional and can be configured later in the app's Settings page.
