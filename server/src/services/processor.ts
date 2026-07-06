@@ -355,6 +355,7 @@ export class SAPProcessor {
           DocDate: docDate,
           DocDueDate: docDueDate,
           TaxDate: taxDate,
+          DocCurrency: "USD",
           Comments: `Auto-generated from PO: ${extractedData.poNumber || ""}. ${extractedData.notes || ""}`,
           DocumentLines: lines,
         });
