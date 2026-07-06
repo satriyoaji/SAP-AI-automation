@@ -54,6 +54,8 @@ export interface SapPurchaseOrderResult {
   docEntry?: number;
   docNum?: number;
   error?: string;
+  requestUrl?: string;
+  requestMethod?: string;
   requestHeaders?: Record<string, string>;
   requestBody?: unknown;
   statusCode?: number;
@@ -329,6 +331,8 @@ export class SapB1Service {
         return {
           success: false,
           error: `SAP B1 Quotation creation failed: ${responseStatus} - ${responseText}`,
+          requestUrl: url,
+          requestMethod: "POST",
           requestHeaders: this._lastRequestHeaders || undefined,
           requestBody: payload,
           statusCode: responseStatus,
@@ -341,6 +345,8 @@ export class SapB1Service {
         success: true,
         docEntry: result.DocEntry,
         docNum: result.DocNum,
+        requestUrl: url,
+        requestMethod: "POST",
         requestHeaders: this._lastRequestHeaders || undefined,
         requestBody: payload,
         statusCode: responseStatus,
@@ -350,18 +356,23 @@ export class SapB1Service {
       return {
         success: false,
         error: error.message,
+        requestUrl: `${this.credentials.serviceLayerUrl}/Quotations`,
+        requestMethod: "POST",
         requestHeaders: this._lastRequestHeaders || undefined,
         requestBody: payload,
       };
     }
   }
 
-  async getBusinessPartners(search?: string): Promise<Array<{ cardCode: string; cardName: string }>> {
-    let url = `${this.credentials.serviceLayerUrl}/BusinessPartners?$select=CardCode,CardName&$filter=CardType eq 'C'`;
-    if (search) {
-      url += ` and (contains(CardCode,'${search}') or contains(CardName,'${search}'))`;
+  async getBusinessPartners(searchTerm?: string): Promise<Array<{ cardCode: string; cardName: string; cardType?: string; cardForeignName?: string }>> {
+    const escapedSearch = (searchTerm || "").trim().replace(/'/g, "''");
+    let url = `${this.credentials.serviceLayerUrl}/BusinessPartners?$select=CardCode,CardName,CardType,CardForeignName`;
+    if (escapedSearch) {
+      url += `&$filter=CardType eq 'C' and (contains(CardCode,'${escapedSearch}') or contains(CardName,'${escapedSearch}'))`;
+    } else {
+      url += `&$filter=CardType eq 'C'`;
     }
-    url += "&$top=50";
+    url += "&$orderby=CardCode&$top=1";
 
     const response = await this.authenticatedRequest(url, { method: "GET" });
 
@@ -373,6 +384,8 @@ export class SapB1Service {
     return (result.value || []).map((bp: any) => ({
       cardCode: bp.CardCode,
       cardName: bp.CardName,
+      cardType: bp.CardType,
+      cardForeignName: bp.CardForeignName,
     }));
   }
 

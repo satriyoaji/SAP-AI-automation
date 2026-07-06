@@ -106,6 +106,8 @@ try {
   db.run(sql`CREATE TABLE IF NOT EXISTS po_sap_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     po_id INTEGER NOT NULL,
+    request_url TEXT,
+    request_method TEXT,
     request_headers TEXT NOT NULL,
     request_body TEXT NOT NULL,
     response_status INTEGER,
@@ -113,6 +115,8 @@ try {
     is_success INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER DEFAULT (strftime('%s', 'now'))
   )`);
+  try { db.run(sql`ALTER TABLE po_sap_logs ADD COLUMN request_url TEXT`); } catch { /* exists */ }
+  try { db.run(sql`ALTER TABLE po_sap_logs ADD COLUMN request_method TEXT`); } catch { /* exists */ }
 
   db.run(sql`CREATE TABLE IF NOT EXISTS po_templates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -208,7 +212,17 @@ app.post("/api/process/:id", async (req, res) => {
     : undefined;
 
   const sapProcessor = new SAPProcessor();
-  await sapProcessor.processOrderNow(id, initialSessionId);
+  try {
+    await sapProcessor.processOrderNow(id, initialSessionId);
+  } catch (error: any) {
+    const message = error?.message || "Failed to process PO";
+    if (message === "Customer Name not found") {
+      res.status(400).json({ success: false, error: "Customer Name not found" });
+      return;
+    }
+    res.status(500).json({ success: false, error: message });
+    return;
+  }
   const updated = await db.select().from(purchaseOrders).where(eq(purchaseOrders.id, id)).get();
   if (!updated) {
     res.status(500).json({ success: false, error: "PO not found after processing" });

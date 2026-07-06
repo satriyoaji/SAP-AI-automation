@@ -73,6 +73,8 @@ export const sapConnections = sqliteTable("sap_connections", {
 export const poSapLogs = sqliteTable("po_sap_logs", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   poId: integer("po_id").notNull(),
+  requestUrl: text("request_url"),
+  requestMethod: text("request_method"),
   requestHeaders: text("request_headers").notNull(), // JSON string
   requestBody: text("request_body").notNull(), // JSON string
   responseStatus: integer("response_status"),

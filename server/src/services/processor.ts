@@ -295,10 +295,39 @@ export class SAPProcessor {
 
         let result: SapPurchaseOrderResult;
 
-        // Create SAP quotation directly from extracted PO data.
+        // Resolve CardCode from SAP BusinessPartners first, based on the
+        // extracted customer name, then create the Quotation.
+        const customerNamePrefix = String(extractedData.customerName || "").trim();
+        if (!customerNamePrefix) {
+          if (options?.orderId) {
+            await db.update(purchaseOrders)
+              .set({ status: "reviewed", sapError: null, updatedAt: new Date() })
+              .where(eq(purchaseOrders.id, order.id));
+            throw new Error("Customer Name not found");
+          }
+          await db.update(purchaseOrders)
+            .set({ status: "error", sapError: "Customer Name not found" })
+            .where(eq(purchaseOrders.id, order.id));
+          continue;
+        }
+
+        const businessPartners = await service.getBusinessPartners(customerNamePrefix);
+        const cardCode = businessPartners[0]?.cardCode || "";
+        if (!cardCode) {
+          if (options?.orderId) {
+            await db.update(purchaseOrders)
+              .set({ status: "reviewed", sapError: null, updatedAt: new Date() })
+              .where(eq(purchaseOrders.id, order.id));
+            throw new Error("Customer Name not found");
+          }
+          await db.update(purchaseOrders)
+            .set({ status: "error", sapError: "Customer Name not found" })
+            .where(eq(purchaseOrders.id, order.id));
+          continue;
+        }
+
         // Mandatory header: DocDate, DocDueDate, TaxDate, CardCode.
         // Mandatory lines: ItemCode, Quantity, Price.
-        const cardCode = extractedData.offerSheetNumber || "";
         const docDate = extractedData.poDate ? new Date(extractedData.poDate).toISOString().split("T")[0] : new Date().toISOString().split("T")[0];
         const docDueDate = extractedData.deliveryDate ? new Date(extractedData.deliveryDate).toISOString().split("T")[0] : docDate;
         const taxDate = docDate;
@@ -332,6 +361,8 @@ export class SAPProcessor {
 
         await db.insert(poSapLogs).values({
           poId: order.id,
+          requestUrl: result.requestUrl || null,
+          requestMethod: result.requestMethod || null,
           requestHeaders: JSON.stringify(result.requestHeaders || {}),
           requestBody: JSON.stringify(result.requestBody || {}),
           responseStatus: result.statusCode ?? null,

@@ -15,6 +15,13 @@
       "when": 1783229407318,
       "tag": "0001_acoustic_felicia_hardy",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1783300900110,
+      "tag": "0002_overconfident_lily_hollister",
+      "breakpoints": true
     }
   ]
 }

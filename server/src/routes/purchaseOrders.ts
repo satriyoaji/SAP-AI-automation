@@ -96,6 +96,8 @@ router.get("/:id/sap-logs", async (req, res) => {
   res.json(
     logs.map((log) => ({
       ...log,
+      requestUrl: log.requestUrl || null,
+      requestMethod: log.requestMethod || null,
       requestHeaders: log.requestHeaders ? JSON.parse(log.requestHeaders) : null,
       requestBody: log.requestBody ? JSON.parse(log.requestBody) : null,
       responseBody: log.responseBody
