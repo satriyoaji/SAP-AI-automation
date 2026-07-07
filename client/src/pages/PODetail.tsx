@@ -88,6 +88,7 @@ export default function PODetail() {
     Array<{ stage: string; message: string; ts: number }>
   >([]);
   const [reanalyzeStage, setReanalyzeStage] = useState<string>("");
+  const [showAiAnalysis, setShowAiAnalysis] = useState(false);
   const [replacingAttId, setReplacingAttId] = useState<number | null>(null);
   const [showSapLogsModal, setShowSapLogsModal] = useState(false);
   const [sapLogs, setSapLogs] = useState<PoSapLog[]>([]);
@@ -424,6 +425,177 @@ export default function PODetail() {
               </li>
             )}
           </ol>
+        </div>
+      )}
+
+      {/* AI Analysis collapsible section */}
+      {(po.aiAnalysis?.screening || (po.aiAnalysis?.attachmentAnalyses && po.aiAnalysis.attachmentAnalyses.length > 0) || data) && (
+        <div className="card mb-6">
+          <button
+            onClick={() => setShowAiAnalysis((v) => !v)}
+            className="flex items-center gap-2 text-lg font-semibold text-gray-900 w-full"
+          >
+            {showAiAnalysis ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+            <FileText size={18} className="text-gray-500" />
+            AI Analysis
+          </button>
+
+          {showAiAnalysis && (
+            <div className="mt-4 space-y-5">
+
+              {/* 1. Email Screening */}
+              {po.aiAnalysis?.screening && (
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Email Screening</p>
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 space-y-2">
+                    <div className="flex items-center gap-2">
+                      {po.aiAnalysis.screening.isLikelyPO
+                        ? <CheckCircle2 size={14} className="text-green-600 shrink-0" />
+                        : <XCircle size={14} className="text-amber-500 shrink-0" />}
+                      <span className="text-sm font-medium text-gray-800">
+                        {po.aiAnalysis.screening.isLikelyPO ? "Likely a Purchase Order" : "Not likely a Purchase Order"}
+                      </span>
+                      <span className="ml-auto text-xs text-gray-500">
+                        {Math.round((po.aiAnalysis.screening.confidence || 0) * 100)}% confidence
+                      </span>
+                    </div>
+                    {po.aiAnalysis.screening.reason && (
+                      <p className="text-xs text-gray-600 pl-5">{po.aiAnalysis.screening.reason}</p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* 2. Per-attachment checklist */}
+              {po.aiAnalysis?.attachmentAnalyses && po.aiAnalysis.attachmentAnalyses.length > 0 && (
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Attachment Analysis</p>
+                  <div className="space-y-3">
+                    {po.aiAnalysis.attachmentAnalyses.map((att: any, idx: number) => (
+                      <div key={idx} className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
+                        <div className="flex items-center gap-2 mb-3">
+                          <FileText size={14} className="text-gray-400 shrink-0" />
+                          <span className="text-sm font-medium text-gray-800 truncate">{att.filename}</span>
+                          <span className={`ml-auto shrink-0 text-xs font-semibold px-2 py-0.5 rounded-full ${
+                            att.isPurchaseOrder ? "bg-green-100 text-green-700" : "bg-gray-200 text-gray-600"
+                          }`}>
+                            {att.isPurchaseOrder ? "PO" : "Not PO"}
+                          </span>
+                        </div>
+                        <ul className="space-y-1.5 text-xs">
+                          <li className="flex items-start gap-2">
+                            {att.isPurchaseOrder
+                              ? <CheckCircle2 size={13} className="text-green-600 mt-0.5 shrink-0" />
+                              : <XCircle size={13} className="text-amber-500 mt-0.5 shrink-0" />}
+                            <span className="text-gray-600 w-32 shrink-0">Is Purchase Order</span>
+                            <span className={`font-medium ${att.isPurchaseOrder ? "text-green-700" : "text-amber-700"}`}>
+                              {att.isPurchaseOrder ? "Yes" : "No"}
+                            </span>
+                          </li>
+                          <li className="flex items-start gap-2">
+                            {att.customerName
+                              ? <CheckCircle2 size={13} className="text-green-600 mt-0.5 shrink-0" />
+                              : <XCircle size={13} className="text-amber-500 mt-0.5 shrink-0" />}
+                            <span className="text-gray-600 w-32 shrink-0">Customer Name</span>
+                            <span className={`font-medium ${att.customerName ? "text-gray-800" : "text-amber-600"}`}>
+                              {att.customerName || "not found"}
+                            </span>
+                          </li>
+                          <li className="flex items-start gap-2">
+                            {att.poNumber
+                              ? <CheckCircle2 size={13} className="text-green-600 mt-0.5 shrink-0" />
+                              : <XCircle size={13} className="text-amber-500 mt-0.5 shrink-0" />}
+                            <span className="text-gray-600 w-32 shrink-0">PO Number</span>
+                            <span className={`font-medium ${att.poNumber ? "text-gray-800" : "text-amber-600"}`}>
+                              {att.poNumber || "not found"}
+                            </span>
+                          </li>
+                          <li className="flex items-start gap-2">
+                            {att.offerSheetNumber
+                              ? <CheckCircle2 size={13} className="text-green-600 mt-0.5 shrink-0" />
+                              : <XCircle size={13} className="text-amber-500 mt-0.5 shrink-0" />}
+                            <span className="text-gray-600 w-32 shrink-0">Offer Sheet #</span>
+                            <span className={`font-medium ${
+                              att.offerSheetNumber ? "text-green-700" : "text-amber-600"
+                            }`}>
+                              {att.offerSheetNumber || "not found"}
+                            </span>
+                          </li>
+                          <li className="flex items-start gap-2">
+                            <CheckCircle2 size={13} className="text-blue-500 mt-0.5 shrink-0" />
+                            <span className="text-gray-600 w-32 shrink-0">Confidence</span>
+                            <span className="font-medium text-gray-800 flex items-center gap-2">
+                              <span className="inline-block w-20 bg-gray-200 rounded-full h-1.5">
+                                <span
+                                  className="block h-1.5 rounded-full bg-blue-500"
+                                  style={{ width: `${Math.round((att.confidence || 0) * 100)}%` }}
+                                />
+                              </span>
+                              {Math.round((att.confidence || 0) * 100)}%
+                            </span>
+                          </li>
+                          {att.reason && (
+                            <li className="flex items-start gap-2 pt-1">
+                              <span className="w-4 shrink-0" />
+                              <span className="text-gray-500 italic">{att.reason}</span>
+                            </li>
+                          )}
+                        </ul>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* 3. Final extraction checklist */}
+              {data && (
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Extracted Fields</p>
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
+                    <ul className="space-y-1.5 text-xs">
+                      {([
+                        { label: "Customer Name",   value: data.customerName },
+                        { label: "PO Number",       value: data.poNumber },
+                        { label: "PO Date",         value: data.poDate },
+                        { label: "Delivery Date",   value: data.deliveryDate },
+                        { label: "Offer Sheet #",   value: data.offerSheetNumber, highlight: true },
+                        { label: "Total Amount",    value: data.totalAmount != null ? String(data.totalAmount) : undefined },
+                        { label: "Payment Terms",   value: data.paymentTerms },
+                      ] as Array<{ label: string; value: string | undefined; highlight?: boolean }>).map(({ label, value, highlight }) => (
+                        <li key={label} className="flex items-start gap-2">
+                          {value
+                            ? <CheckCircle2 size={13} className="text-green-600 mt-0.5 shrink-0" />
+                            : <XCircle size={13} className="text-amber-500 mt-0.5 shrink-0" />}
+                          <span className="text-gray-600 w-32 shrink-0">{label}</span>
+                          <span className={`font-medium ${
+                            value
+                              ? highlight ? "text-green-700" : "text-gray-800"
+                              : "text-amber-600"
+                          }`}>
+                            {value || "not extracted"}
+                          </span>
+                        </li>
+                      ))}
+                      <li className="flex items-start gap-2">
+                        {data.items && data.items.length > 0
+                          ? <CheckCircle2 size={13} className="text-green-600 mt-0.5 shrink-0" />
+                          : <XCircle size={13} className="text-amber-500 mt-0.5 shrink-0" />}
+                        <span className="text-gray-600 w-32 shrink-0">Line Items</span>
+                        <span className={`font-medium ${
+                          data.items && data.items.length > 0 ? "text-gray-800" : "text-amber-600"
+                        }`}>
+                          {data.items && data.items.length > 0
+                            ? `${data.items.length} item${data.items.length !== 1 ? "s" : ""} extracted`
+                            : "no items extracted"}
+                        </span>
+                      </li>
+                    </ul>
+                  </div>
+                </div>
+              )}
+
+            </div>
+          )}
         </div>
       )}
 
