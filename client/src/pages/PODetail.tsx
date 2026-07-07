@@ -90,6 +90,7 @@ export default function PODetail() {
   const [loadingSapLogs, setLoadingSapLogs] = useState(false);
   const [sapLogsError, setSapLogsError] = useState<string | null>(null);
   const [showSendConfirmModal, setShowSendConfirmModal] = useState(false);
+  const [attnos, setAttnos] = useState("");
   const fileInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
 
   const handleReplaceFile = async (attId: number, file: File) => {
@@ -156,7 +157,7 @@ export default function PODetail() {
           "Content-Type": "application/json",
           ...(sessionId ? { "x-sap-session-id": sessionId } : {}),
         },
-        body: JSON.stringify({ extractedData: po.extractedData }),
+        body: JSON.stringify({ extractedData: po.extractedData, attnos: attnos.trim() }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -701,10 +702,27 @@ export default function PODetail() {
             <div className="border-b border-gray-200 px-5 py-4">
               <h3 className="text-lg font-semibold text-gray-900">Confirm Send to SAP</h3>
             </div>
-            <div className="px-5 py-4">
+            <div className="px-5 py-4 space-y-3">
               <p className="text-sm text-gray-700">
-                Proceed to send this PO data to SAP Service Layer `POST /Quotations`?
+                Proceed to send this PO data to SAP Service Layer <code>POST /Quotations</code>?
               </p>
+              <div>
+                <label htmlFor="attnos" className="block text-sm font-medium text-gray-800 mb-1">
+                  Attention Name (U_ATTNOS) <span className="text-red-500">*</span>
+                </label>
+                <input
+                  id="attnos"
+                  type="text"
+                  value={attnos}
+                  onChange={(e) => setAttnos(e.target.value)}
+                  placeholder="e.g. IBU DEPUTRI"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  autoFocus
+                />
+                <p className="mt-1 text-xs text-gray-500">
+                  Free text — required by the SAP Quotation.
+                </p>
+              </div>
             </div>
             <div className="flex justify-end gap-2 px-5 py-4 border-t border-gray-200">
               <button
@@ -720,7 +738,7 @@ export default function PODetail() {
                   await handleSubmitAndSendPoToSap();
                 }}
                 className="inline-flex items-center rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
-                disabled={processing}
+                disabled={processing || !attnos.trim()}
               >
                 Yes
               </button>

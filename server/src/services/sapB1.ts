@@ -29,12 +29,14 @@ export interface SapB1LoginResult {
 }
 
 interface SalesOrderLine {
+  LineNum?: number;
   ItemCode?: string;
   ItemDescription?: string;
   Quantity: number;
   Price?: number;
   UnitPrice?: number;
   TaxCode?: string;
+  VatGroup?: string;
   Currency?: string;
   ShipDate?: string;
   FreeText?: string;
@@ -45,7 +47,11 @@ interface PurchaseOrderPayload {
   DocDate?: string;
   DocDueDate?: string;
   TaxDate?: string;
+  DocCurrency?: string;
   Comments?: string;
+  U_OSNO?: string;
+  U_ATTNOS?: string;
+  U_SQFINAL?: string;
   DocumentLines: SalesOrderLine[];
 }
 

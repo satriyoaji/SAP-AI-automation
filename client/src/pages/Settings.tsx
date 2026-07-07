@@ -80,6 +80,7 @@ export default function SettingsPage() {
   const [sapSaveError, setSapSaveError] = useState<string | null>(null);
   const [sapSaving, setSapSaving] = useState(false);
   const [inlineTestResult, setInlineTestResult] = useState<{ status: "idle" | "testing" | "ok" | "failed"; message?: string }>({ status: "idle" });
+  const [savedTestResult, setSavedTestResult] = useState<{ status: "idle" | "testing" | "ok" | "failed"; message?: string }>({ status: "idle" });
   const [sessionDetails, setSessionDetails] = useState<{
     sessionId?: string;
     version?: string;
@@ -148,7 +149,7 @@ export default function SettingsPage() {
       }
       setInlineTestResult({
         status: ok ? "ok" : "failed",
-        message: body?.message || (ok ? "Connected" : `HTTP ${res.status}`),
+        message: body?.message || body?.error || (ok ? "Connected" : `HTTP ${res.status}`),
       });
     } catch (err: any) {
       setInlineTestResult({ status: "failed", message: err?.message || "Network error" });
@@ -192,6 +193,34 @@ export default function SettingsPage() {
   const deleteSAP = async (id: number) => {
     await fetch(`/api/sap/connections/${id}`, { method: "DELETE" });
     fetchData();
+  };
+
+  const testSavedConnection = async (id: number) => {
+    setSavedTestResult({ status: "testing" });
+    try {
+      const sessionFromCookie = getSapSessionFromCookie();
+      const res = await fetch(`/api/sap/connections/${id}/test`, {
+        method: "POST",
+        headers: sessionFromCookie
+          ? { "x-sap-session-id": sessionFromCookie.replace("B1SESSION=", "") }
+          : undefined,
+      });
+      const body = await res.json().catch(() => ({}));
+      const ok = res.ok && body?.success === true;
+      if (ok) {
+        saveSapSessionCookie({
+          sessionId: body?.sessionId,
+          sessionTimeout: body?.sessionTimeout,
+        });
+        fetchData();
+      }
+      setSavedTestResult({
+        status: ok ? "ok" : "failed",
+        message: body?.message || body?.error || (ok ? "Connected" : `HTTP ${res.status}`),
+      });
+    } catch (err: any) {
+      setSavedTestResult({ status: "failed", message: err?.message || "Network error" });
+    }
   };
 
   const applyConnection = async (id: number) => {
@@ -314,6 +343,15 @@ export default function SettingsPage() {
                     </div>
                     <div className="flex items-center gap-2 ml-4 shrink-0">
                       <button
+                        onClick={() => testSavedConnection(conn.id)}
+                        disabled={savedTestResult.status === "testing"}
+                        className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded border border-gray-300 text-gray-700 bg-white hover:bg-gray-100 disabled:opacity-50"
+                        title="Test saved connection"
+                      >
+                        <RefreshCw size={12} className={savedTestResult.status === "testing" ? "animate-spin" : ""} />
+                        {savedTestResult.status === "testing" ? "Testing" : "Test"}
+                      </button>
+                      <button
                         onClick={() => applyConnection(conn.id)}
                         className="text-blue-600 hover:text-blue-900"
                         title="Edit saved connection"
@@ -325,6 +363,26 @@ export default function SettingsPage() {
                       </button>
                     </div>
                   </div>
+                  {savedTestResult.status !== "idle" && (
+                    <div
+                      className={`mt-3 p-2 rounded border text-xs flex items-start gap-2 ${
+                        savedTestResult.status === "ok"
+                          ? "bg-green-50 text-green-700 border-green-200"
+                          : savedTestResult.status === "failed"
+                            ? "bg-red-50 text-red-700 border-red-200"
+                            : "bg-gray-50 text-gray-700 border-gray-200"
+                      }`}
+                    >
+                      {savedTestResult.status === "ok" ? (
+                        <CheckCircle2 size={12} className="mt-0.5 shrink-0" />
+                      ) : savedTestResult.status === "failed" ? (
+                        <XCircle size={12} className="mt-0.5 shrink-0" />
+                      ) : (
+                        <RefreshCw size={12} className="mt-0.5 shrink-0 animate-spin" />
+                      )}
+                      <span className="break-words">{savedTestResult.message || (savedTestResult.status === "testing" ? "Testing..." : "")}</span>
+                    </div>
+                  )}
                 </div>
               );
             })()}

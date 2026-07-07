@@ -1,5 +1,5 @@
 import { db } from "../db/index.js";
-import { emailAccounts, purchaseOrders, poAttachments, sapConnections, poSapLogs } from "../db/schema.js";
+import { emailAccounts, purchaseOrders, poAttachments, sapConnections, poSapLogs, customerItemMappings } from "../db/schema.js";
 import { eq, and, isNull } from "drizzle-orm";
 import { GmailService } from "./email/gmail.js";
 import { ImapService } from "./email/imap.js";
@@ -202,7 +202,8 @@ export class EmailProcessor {
           const offerSheetNumber = analysis.offerSheetNumber || poAttachmentsList.find((pa) => pa.offerSheetNumber)?.offerSheetNumber;
           let status: string;
           if (offerSheetNumber) {
-            status = "processing";
+            // Wait for human review + Attention Name entry on PO detail page.
+            status = "reviewed";
           } else {
             status = "needs_offer_sheet";
           }
@@ -251,7 +252,7 @@ export class EmailProcessor {
 }
 
 export class SAPProcessor {
-  private async processOrders(options?: { orderId?: number; initialSessionId?: string }) {
+  private async processOrders(options?: { orderId?: number; initialSessionId?: string; attnos?: string }) {
     const pendingOrders = options?.orderId
       ? await db.select()
         .from(purchaseOrders)
@@ -326,22 +327,83 @@ export class SAPProcessor {
           continue;
         }
 
-        // Mandatory header: DocDate, DocDueDate, TaxDate, CardCode.
-        // Mandatory lines: ItemCode, Quantity, Price.
-        const docDate = extractedData.poDate ? new Date(extractedData.poDate).toISOString().split("T")[0] : new Date().toISOString().split("T")[0];
-        const docDueDate = extractedData.deliveryDate ? new Date(extractedData.deliveryDate).toISOString().split("T")[0] : docDate;
-        const taxDate = docDate;
+        // U_ATTNOS is a mandatory user-entered field (Attention Name on the PO
+        // detail submit modal). Without it we can't build a valid payload.
+        const attnos = (options?.attnos || "").trim();
+        if (!attnos) {
+          const msg = "Missing attention name (U_ATTNOS). Submit manually from PO detail.";
+          if (options?.orderId) {
+            await db.update(purchaseOrders)
+              .set({ status: "reviewed", sapError: msg, updatedAt: new Date() })
+              .where(eq(purchaseOrders.id, order.id));
+            throw new Error(msg);
+          }
+          await db.update(purchaseOrders)
+            .set({ status: "reviewed", sapError: msg })
+            .where(eq(purchaseOrders.id, order.id));
+          continue;
+        }
 
-        const lines = (extractedData.items || []).map((item: any, idx: number) => ({
-          LineNum: idx,
-          ItemCode: item.itemCode || "",
-          Quantity: item.quantity || 0,
-          Price: item.unitPrice || 0,
-          TaxCode: item.taxCode || extractedData.taxCode || "T1",
-          ItemDescription: item.description || "",
-          ShipDate: docDueDate,
-          FreeText: item.description || "",
-        }));
+        // Load customer -> SAP item-code mappings for this customer. Match on
+        // customerName (case-insensitive). Mapping is now mandatory for every
+        // line item — unmapped codes cause the push to fail with a clear list.
+        const allMappings = await db.select().from(customerItemMappings).all();
+        const mappingByCode = new Map<string, string>();
+        const customerKey = customerNamePrefix.toLowerCase();
+        for (const m of allMappings) {
+          if (!m.sapItemCode || m.sapItemCode.trim() === "") continue;
+          if ((m.customerName || "").trim().toLowerCase() !== customerKey) continue;
+          mappingByCode.set(
+            (m.customerItemCode || "").trim().toLowerCase(),
+            m.sapItemCode.trim(),
+          );
+        }
+
+        const items = extractedData.items || [];
+        const unmapped: string[] = [];
+        for (const item of items) {
+          const rawCustomerCode = (item.itemCode || "").trim();
+          if (!rawCustomerCode) {
+            unmapped.push("(blank)");
+            continue;
+          }
+          if (!mappingByCode.get(rawCustomerCode.toLowerCase())) {
+            unmapped.push(rawCustomerCode);
+          }
+        }
+
+        if (unmapped.length > 0) {
+          const msg = `Unmapped SAP item codes for "${customerNamePrefix}": ${unmapped.join(", ")}. Add mappings in Master Item Customer.`;
+          if (options?.orderId) {
+            await db.update(purchaseOrders)
+              .set({ status: "reviewed", sapError: msg, updatedAt: new Date() })
+              .where(eq(purchaseOrders.id, order.id));
+            throw new Error(msg);
+          }
+          await db.update(purchaseOrders)
+            .set({ status: "error", sapError: msg })
+            .where(eq(purchaseOrders.id, order.id));
+          continue;
+        }
+
+        // All dates are today (business rule: SAP uses submit date, not PO date).
+        const today = new Date().toISOString().split("T")[0];
+
+        const lines = items.map((item: any, idx: number) => {
+          const rawCustomerCode = (item.itemCode || "").trim();
+          const sapItemCode = mappingByCode.get(rawCustomerCode.toLowerCase())!;
+          const desc = (item.description || "").trim();
+          return {
+            LineNum: idx,
+            ItemCode: sapItemCode,
+            Quantity: item.quantity || 0,
+            Price: item.unitPrice || 0,
+            VatGroup: "PPNO10",
+            ItemDescription: desc,
+            ShipDate: today,
+            FreeText: desc,
+          };
+        });
 
         if (!cardCode || lines.length === 0 || lines.some((line: any) => !line.ItemCode || !line.Quantity || (!line.Price && line.Price !== 0))) {
           await db.update(purchaseOrders)
@@ -350,13 +412,18 @@ export class SAPProcessor {
           continue;
         }
 
+        const offerSheetForSap = (order.offerSheetNumber || extractedData.offerSheetNumber || "").toString();
+
         result = await service.createQuotation({
           CardCode: cardCode,
-          DocDate: docDate,
-          DocDueDate: docDueDate,
-          TaxDate: taxDate,
+          DocDate: today,
+          DocDueDate: today,
+          TaxDate: today,
           DocCurrency: "USD",
-          Comments: `Auto-generated from PO: ${extractedData.poNumber || ""}. ${extractedData.notes || ""}`,
+          Comments: `Auto-generated from PO: ${extractedData.poNumber || ""}. ${extractedData.notes || ""}`.trim(),
+          U_OSNO: offerSheetForSap,
+          U_ATTNOS: attnos,
+          U_SQFINAL: "YES",
           DocumentLines: lines,
         });
 
@@ -400,13 +467,16 @@ export class SAPProcessor {
   }
 
   async processPendingOrders(initialSessionId?: string) {
+    // Note: without attnos this will fail for every pending order and mark
+    // them back to reviewed with a helpful sapError. Manual submit from PO
+    // detail is the required path.
     await this.processOrders({ initialSessionId });
   }
 
-  async processOrderNow(orderId: number, initialSessionId?: string) {
+  async processOrderNow(orderId: number, initialSessionId?: string, attnos?: string) {
     await db.update(purchaseOrders)
       .set({ status: "processing", sapError: null, updatedAt: new Date() })
       .where(eq(purchaseOrders.id, orderId));
-    await this.processOrders({ orderId, initialSessionId });
+    await this.processOrders({ orderId, initialSessionId, attnos });
   }
 }

@@ -10,6 +10,7 @@ import sapRoutes from "./routes/sap.js";
 import settingsRoutes from "./routes/settings.js";
 import uploadRoutes from "./routes/upload.js";
 import templatesRoutes from "./routes/templates.js";
+import customerItemsRoutes from "./routes/customerItems.js";
 import { EmailProcessor, SAPProcessor } from "./services/processor.js";
 
 const app = express();
@@ -118,6 +119,18 @@ try {
   try { db.run(sql`ALTER TABLE po_sap_logs ADD COLUMN request_url TEXT`); } catch { /* exists */ }
   try { db.run(sql`ALTER TABLE po_sap_logs ADD COLUMN request_method TEXT`); } catch { /* exists */ }
 
+  db.run(sql`CREATE TABLE IF NOT EXISTS customer_item_mappings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    customer_name TEXT NOT NULL,
+    customer_item_code TEXT NOT NULL,
+    description TEXT,
+    sap_item_code TEXT,
+    updated_at INTEGER DEFAULT (strftime('%s', 'now')),
+    created_at INTEGER DEFAULT (strftime('%s', 'now'))
+  )`);
+  db.run(sql`CREATE UNIQUE INDEX IF NOT EXISTS customer_item_mappings_customer_code_uq
+    ON customer_item_mappings (customer_name, customer_item_code)`);
+
   db.run(sql`CREATE TABLE IF NOT EXISTS po_templates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -153,6 +166,7 @@ app.use("/api/sap", sapRoutes);
 app.use("/api/settings", settingsRoutes);
 app.use("/api/upload", uploadRoutes);
 app.use("/api/templates", templatesRoutes);
+app.use("/api/customer-items", customerItemsRoutes);
 
 // Health check
 app.get("/api/health", (_req, res) => {
@@ -206,6 +220,12 @@ app.post("/api/process/:id", async (req, res) => {
     return;
   }
 
+  const attnos = typeof req.body?.attnos === "string" ? req.body.attnos.trim() : "";
+  if (!attnos) {
+    res.status(400).json({ error: "attnos (Attention Name) is required" });
+    return;
+  }
+
   const rawSessionId = req.header("x-sap-session-id");
   const initialSessionId = typeof rawSessionId === "string"
     ? rawSessionId.trim().replace(/^B1SESSION=/i, "")
@@ -213,7 +233,7 @@ app.post("/api/process/:id", async (req, res) => {
 
   const sapProcessor = new SAPProcessor();
   try {
-    await sapProcessor.processOrderNow(id, initialSessionId);
+    await sapProcessor.processOrderNow(id, initialSessionId, attnos);
   } catch (error: any) {
     const message = error?.message || "Failed to process PO";
     if (message === "Customer Name not found") {

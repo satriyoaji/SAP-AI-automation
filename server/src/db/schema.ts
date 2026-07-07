@@ -103,6 +103,16 @@ export const poTemplates = sqliteTable("po_templates", {
   updatedAt: integer("updated_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
 });
 
+export const customerItemMappings = sqliteTable("customer_item_mappings", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  customerName: text("customer_name").notNull(),
+  customerItemCode: text("customer_item_code").notNull(),
+  description: text("description"),
+  sapItemCode: text("sap_item_code"),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
+  createdAt: integer("created_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
+});
+
 export const poTemplateRegions = sqliteTable("po_template_regions", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   templateId: integer("template_id").notNull(),
