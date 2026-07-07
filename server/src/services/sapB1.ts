@@ -370,10 +370,14 @@ export class SapB1Service {
     }
   }
 
-  async getBusinessPartners(searchTerm?: string): Promise<Array<{ cardCode: string; cardName: string; cardType?: string; cardForeignName?: string }>> {
+  async getBusinessPartners(
+    searchTerm?: string,
+    options?: { allCandidates?: boolean; top?: number },
+  ): Promise<Array<{ cardCode: string; cardName: string; cardType?: string; cardForeignName?: string }>> {
     const raw = (searchTerm || "").trim();
+    const perQueryTop = Math.max(1, Math.min(options?.top ?? (options?.allCandidates ? 20 : 5), 50));
     if (!raw) {
-      const url = `${this.credentials.serviceLayerUrl}/BusinessPartners?$select=CardCode,CardName,CardType,CardForeignName&$filter=CardType eq 'C'&$orderby=CardCode&$top=1`;
+      const url = `${this.credentials.serviceLayerUrl}/BusinessPartners?$select=CardCode,CardName,CardType,CardForeignName&$filter=CardType eq 'C'&$orderby=CardCode&$top=${perQueryTop}`;
       const response = await this.authenticatedRequest(url, { method: "GET" });
       if (!response.ok) throw new Error(`Failed to fetch Business Partners: ${response.status}`);
       const result = await response.json();
@@ -409,6 +413,7 @@ export class SapB1Service {
       ),
     );
 
+    const merged = new Map<string, { cardCode: string; cardName: string; cardType?: string; cardForeignName?: string }>();
     for (const term of candidates) {
       const escaped = escape(term);
       const filter =
@@ -417,27 +422,38 @@ export class SapB1Service {
           `contains(CardName,'${escaped}') or ` +
           `contains(CardForeignName,'${escaped}')` +
         `)`;
-      const url = `${this.credentials.serviceLayerUrl}/BusinessPartners?$select=CardCode,CardName,CardType,CardForeignName&$filter=${encodeURIComponent(filter)}&$orderby=CardCode&$top=5`;
+      const url = `${this.credentials.serviceLayerUrl}/BusinessPartners?$select=CardCode,CardName,CardType,CardForeignName&$filter=${encodeURIComponent(filter)}&$orderby=CardCode&$top=${perQueryTop}`;
 
       const response = await this.authenticatedRequest(url, { method: "GET" });
       if (!response.ok) throw new Error(`Failed to fetch Business Partners: ${response.status}`);
       const result = await response.json();
       const rows = result.value || [];
       if (rows.length > 0) {
-        console.log(
-          `[sap] getBusinessPartners resolved "${raw}" via candidate "${term}" → ${rows[0].CardCode} (${rows[0].CardName})`,
-        );
-        return rows.map((bp: any) => ({
-          cardCode: bp.CardCode,
-          cardName: bp.CardName,
-          cardType: bp.CardType,
-          cardForeignName: bp.CardForeignName,
-        }));
+        for (const bp of rows) {
+          if (!merged.has(bp.CardCode)) {
+            merged.set(bp.CardCode, {
+              cardCode: bp.CardCode,
+              cardName: bp.CardName,
+              cardType: bp.CardType,
+              cardForeignName: bp.CardForeignName,
+            });
+          }
+        }
+        // If the caller wants a single deterministic pick (background lookup),
+        // stop as soon as any candidate matched.
+        if (!options?.allCandidates) {
+          console.log(
+            `[sap] getBusinessPartners resolved "${raw}" via candidate "${term}" → ${rows[0].CardCode} (${rows[0].CardName})`,
+          );
+          return Array.from(merged.values());
+        }
       }
     }
 
-    console.log(`[sap] getBusinessPartners no match for "${raw}" (candidates tried: ${candidates.join(" | ")})`);
-    return [];
+    if (merged.size === 0) {
+      console.log(`[sap] getBusinessPartners no match for "${raw}" (candidates tried: ${candidates.join(" | ")})`);
+    }
+    return Array.from(merged.values());
   }
 
   async getItems(search?: string): Promise<Array<{ itemCode: string; itemName: string }>> {

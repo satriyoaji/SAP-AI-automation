@@ -1,10 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, ChevronRight, Save, Users } from "lucide-react";
+import { ChevronDown, ChevronRight, Save, Users, Search, XCircle, CheckCircle2 } from "lucide-react";
 
 interface CustomerRow {
   customerName: string;
   itemsCount: number;
   mappedCount: number;
+  sapCardCode: string | null;
+  sapCardName: string | null;
+}
+
+interface BpCandidate {
+  cardCode: string;
+  cardName: string;
+  cardType?: string;
+  cardForeignName?: string;
 }
 
 interface CustomerItem {
@@ -33,6 +42,13 @@ export default function MasterItemCustomer() {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [savingCode, setSavingCode] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [bpModalCustomer, setBpModalCustomer] = useState<string | null>(null);
+  const [bpCandidates, setBpCandidates] = useState<BpCandidate[]>([]);
+  const [bpSelectedCode, setBpSelectedCode] = useState<string | null>(null);
+  const [bpLoading, setBpLoading] = useState(false);
+  const [bpError, setBpError] = useState<string | null>(null);
+  const [bpSearchInput, setBpSearchInput] = useState("");
+  const [bpSaving, setBpSaving] = useState(false);
 
   useEffect(() => {
     void fetchCustomers();
@@ -122,6 +138,76 @@ export default function MasterItemCustomer() {
     }
   };
 
+  const openBpModal = async (customerName: string, initialSearch?: string) => {
+    setBpModalCustomer(customerName);
+    setBpCandidates([]);
+    setBpSelectedCode(null);
+    setBpError(null);
+    setBpSearchInput(initialSearch ?? customerName);
+    void loadBpCandidates(customerName, initialSearch);
+  };
+
+  const loadBpCandidates = async (customerName: string, searchOverride?: string) => {
+    setBpLoading(true);
+    setBpError(null);
+    try {
+      const qs = searchOverride ? `?search=${encodeURIComponent(searchOverride)}` : "";
+      const res = await fetch(
+        `${API}/${encodeURIComponent(customerName)}/sap-candidates${qs}`,
+      );
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(body?.error || `HTTP ${res.status}`);
+      }
+      setBpCandidates(Array.isArray(body?.candidates) ? body.candidates : []);
+      setBpSelectedCode(body?.selectedCardCode || null);
+    } catch (err: any) {
+      setBpError(err?.message || "Failed to load SAP candidates");
+      setBpCandidates([]);
+    } finally {
+      setBpLoading(false);
+    }
+  };
+
+  const saveBpPick = async () => {
+    if (!bpModalCustomer || !bpSelectedCode) return;
+    const chosen = bpCandidates.find((c) => c.cardCode === bpSelectedCode);
+    if (!chosen) return;
+    setBpSaving(true);
+    try {
+      const res = await fetch(
+        `${API}/${encodeURIComponent(bpModalCustomer)}/sap-bp`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sapCardCode: chosen.cardCode,
+            sapCardName: chosen.cardName,
+          }),
+        },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await fetchCustomers();
+      setBpModalCustomer(null);
+    } catch (err: any) {
+      setBpError(err?.message || "Failed to save BP");
+    } finally {
+      setBpSaving(false);
+    }
+  };
+
+  const clearBp = async (customerName: string) => {
+    if (!confirm(`Clear the saved SAP BP for "${customerName}"?`)) return;
+    try {
+      await fetch(`${API}/${encodeURIComponent(customerName)}/sap-bp`, {
+        method: "DELETE",
+      });
+      await fetchCustomers();
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   const filtered = useMemo(() => {
     if (!search.trim()) return customers;
     const q = search.trim().toLowerCase();
@@ -167,43 +253,83 @@ export default function MasterItemCustomer() {
               const isOpen = openCustomer === c.customerName;
               return (
                 <li key={c.customerName}>
-                  <button
-                    onClick={() => toggleCustomer(c.customerName)}
-                    className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 text-left"
-                  >
-                    {isOpen ? (
-                      <ChevronDown className="w-4 h-4 text-gray-500" />
-                    ) : (
-                      <ChevronRight className="w-4 h-4 text-gray-500" />
-                    )}
-                    <div className="flex-1">
-                      <div className="font-medium text-gray-900">
-                        {c.customerName}
-                      </div>
-                      <div className="text-xs text-gray-500 mt-0.5">
-                        {c.itemsCount} distinct item{c.itemsCount === 1 ? "" : "s"}
-                        {" · "}
-                        {c.mappedCount} mapped to SAP
-                      </div>
-                    </div>
-                    <span
-                      className={`text-xs px-2 py-0.5 rounded-full ${
-                        c.mappedCount >= c.itemsCount && c.itemsCount > 0
-                          ? "bg-green-100 text-green-800"
-                          : c.mappedCount > 0
-                            ? "bg-amber-100 text-amber-800"
-                            : "bg-gray-100 text-gray-700"
-                      }`}
+                  <div className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50">
+                    <button
+                      onClick={() => toggleCustomer(c.customerName)}
+                      className="flex items-center gap-3 flex-1 text-left"
                     >
-                      {c.itemsCount === 0
-                        ? "no items"
-                        : c.mappedCount >= c.itemsCount
-                          ? "complete"
-                          : c.mappedCount > 0
-                            ? "partial"
-                            : "unmapped"}
-                    </span>
-                  </button>
+                      {isOpen ? (
+                        <ChevronDown className="w-4 h-4 text-gray-500" />
+                      ) : (
+                        <ChevronRight className="w-4 h-4 text-gray-500" />
+                      )}
+                      <div className="flex-1">
+                        <div className="font-medium text-gray-900">
+                          {c.customerName}
+                        </div>
+                        <div className="text-xs text-gray-500 mt-0.5">
+                          {c.itemsCount} distinct item{c.itemsCount === 1 ? "" : "s"}
+                          {" · "}
+                          {c.mappedCount} mapped to SAP
+                        </div>
+                      </div>
+                    </button>
+                    {/* SAP BP chip / picker */}
+                    <div className="flex items-center gap-2 shrink-0">
+                      {c.sapCardCode ? (
+                        <div
+                          className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs text-emerald-800"
+                          title={c.sapCardName || undefined}
+                        >
+                          <CheckCircle2 className="w-3 h-3" />
+                          <span className="font-mono">{c.sapCardCode}</span>
+                          {c.sapCardName && (
+                            <span className="hidden md:inline max-w-[220px] truncate opacity-80">
+                              {c.sapCardName}
+                            </span>
+                          )}
+                          <button
+                            onClick={() => openBpModal(c.customerName)}
+                            className="ml-1 rounded px-1 text-emerald-700 hover:bg-emerald-100"
+                          >
+                            change
+                          </button>
+                          <button
+                            onClick={() => clearBp(c.customerName)}
+                            className="rounded px-1 text-red-600 hover:bg-red-50"
+                            title="Clear saved BP"
+                          >
+                            <XCircle className="w-3 h-3" />
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => openBpModal(c.customerName)}
+                          className="inline-flex items-center gap-1 rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs text-blue-800 hover:bg-blue-100"
+                        >
+                          <Search className="w-3 h-3" />
+                          Pick BP
+                        </button>
+                      )}
+                      <span
+                        className={`text-xs px-2 py-0.5 rounded-full ${
+                          c.mappedCount >= c.itemsCount && c.itemsCount > 0
+                            ? "bg-green-100 text-green-800"
+                            : c.mappedCount > 0
+                              ? "bg-amber-100 text-amber-800"
+                              : "bg-gray-100 text-gray-700"
+                        }`}
+                      >
+                        {c.itemsCount === 0
+                          ? "no items"
+                          : c.mappedCount >= c.itemsCount
+                            ? "complete"
+                            : c.mappedCount > 0
+                              ? "partial"
+                              : "unmapped"}
+                      </span>
+                    </div>
+                  </div>
 
                   {isOpen && (
                     <div className="bg-gray-50 border-t px-4 py-4">
@@ -299,6 +425,139 @@ export default function MasterItemCustomer() {
           </ul>
         )}
       </div>
+
+      {bpModalCustomer && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          onClick={() => setBpModalCustomer(null)}
+        >
+          <div
+            className="w-full max-w-2xl rounded-xl bg-white shadow-xl max-h-[85vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="border-b border-gray-200 px-5 py-4 flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">
+                  Pick SAP BusinessPartner
+                </h3>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Customer from PO: <span className="font-medium">{bpModalCustomer}</span>
+                </p>
+              </div>
+              <button
+                onClick={() => setBpModalCustomer(null)}
+                className="rounded-md px-3 py-1 text-sm text-gray-600 hover:bg-gray-100"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="border-b border-gray-100 px-5 py-3 flex items-center gap-2">
+              <input
+                type="text"
+                value={bpSearchInput}
+                onChange={(e) => setBpSearchInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    void loadBpCandidates(bpModalCustomer, bpSearchInput.trim() || undefined);
+                  }
+                }}
+                placeholder="Search SAP by CardCode / CardName / CardForeignName"
+                className="flex-1 px-3 py-1.5 border rounded-md text-sm"
+              />
+              <button
+                onClick={() =>
+                  void loadBpCandidates(
+                    bpModalCustomer,
+                    bpSearchInput.trim() || undefined,
+                  )
+                }
+                disabled={bpLoading}
+                className="inline-flex items-center gap-1 px-3 py-1.5 text-sm rounded-md border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-50"
+              >
+                <Search className="w-3 h-3" />
+                Search
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-auto px-5 py-3">
+              {bpLoading && (
+                <div className="py-8 text-center text-sm text-gray-500">
+                  Loading SAP candidates…
+                </div>
+              )}
+              {bpError && (
+                <div className="mb-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  {bpError}
+                </div>
+              )}
+              {!bpLoading && bpCandidates.length === 0 && !bpError && (
+                <div className="py-8 text-center text-sm text-gray-500">
+                  No SAP candidates found. Try a different search.
+                </div>
+              )}
+              {!bpLoading && bpCandidates.length > 0 && (
+                <ul className="space-y-1">
+                  {bpCandidates.map((c) => {
+                    const checked = bpSelectedCode === c.cardCode;
+                    return (
+                      <li key={c.cardCode}>
+                        <label
+                          className={`flex items-start gap-3 rounded-md border px-3 py-2 cursor-pointer ${
+                            checked
+                              ? "border-blue-400 bg-blue-50"
+                              : "border-gray-200 hover:bg-gray-50"
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            name="bp"
+                            checked={checked}
+                            onChange={() => setBpSelectedCode(c.cardCode)}
+                            className="mt-1"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono text-sm font-semibold">
+                                {c.cardCode}
+                              </span>
+                              <span className="text-sm text-gray-900 truncate">
+                                {c.cardName}
+                              </span>
+                            </div>
+                            {c.cardForeignName && (
+                              <div className="text-xs text-gray-500 mt-0.5 truncate">
+                                Foreign: {c.cardForeignName}
+                              </div>
+                            )}
+                          </div>
+                        </label>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+
+            <div className="border-t border-gray-200 px-5 py-3 flex items-center justify-end gap-2">
+              <button
+                onClick={() => setBpModalCustomer(null)}
+                className="px-4 py-2 text-sm rounded-md border border-gray-300 bg-white hover:bg-gray-50"
+                disabled={bpSaving}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={saveBpPick}
+                disabled={!bpSelectedCode || bpSaving}
+                className="px-4 py-2 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+              >
+                {bpSaving ? "Saving…" : "Save selected BP"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

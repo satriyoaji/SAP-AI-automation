@@ -1,5 +1,5 @@
 import { db } from "../db/index.js";
-import { emailAccounts, purchaseOrders, poAttachments, sapConnections, poSapLogs, customerItemMappings } from "../db/schema.js";
+import { emailAccounts, purchaseOrders, poAttachments, sapConnections, poSapLogs, customerItemMappings, customerBpMappings } from "../db/schema.js";
 import { eq, and, isNull } from "drizzle-orm";
 import { GmailService } from "./email/gmail.js";
 import { ImapService } from "./email/imap.js";
@@ -268,7 +268,7 @@ export class SAPProcessor {
         const sapConns = await db.select().from(sapConnections).where(eq(sapConnections.isActive, true));
         if (sapConns.length === 0) {
           await db.update(purchaseOrders)
-            .set({ status: "error", sapError: "No active SAP connection" })
+            .set({ status: "reviewed", sapError: "No active SAP connection", updatedAt: new Date() })
             .where(eq(purchaseOrders.id, order.id));
           continue;
         }
@@ -289,7 +289,7 @@ export class SAPProcessor {
         const extractedData = order.extractedData ? JSON.parse(order.extractedData) : null;
         if (!extractedData || !extractedData.isPurchaseOrder) {
           await db.update(purchaseOrders)
-            .set({ status: "error", sapError: "No valid extracted data" })
+            .set({ status: "reviewed", sapError: "No valid extracted data", updatedAt: new Date() })
             .where(eq(purchaseOrders.id, order.id));
           continue;
         }
@@ -307,13 +307,24 @@ export class SAPProcessor {
             throw new Error("Customer Name not found");
           }
           await db.update(purchaseOrders)
-            .set({ status: "error", sapError: "Customer Name not found" })
+            .set({ status: "reviewed", sapError: "Customer Name not found", updatedAt: new Date() })
             .where(eq(purchaseOrders.id, order.id));
           continue;
         }
 
-        const businessPartners = await service.getBusinessPartners(customerNamePrefix);
-        const cardCode = businessPartners[0]?.cardCode || "";
+        // If the user manually resolved this customer to a specific BP in
+        // Master Item Customer, use that CardCode directly. Otherwise fall
+        // back to the fuzzy SAP lookup and take the first candidate.
+        const bpMapping = await db
+          .select()
+          .from(customerBpMappings)
+          .where(eq(customerBpMappings.customerName, customerNamePrefix))
+          .get();
+        let cardCode = bpMapping?.sapCardCode || "";
+        if (!cardCode) {
+          const businessPartners = await service.getBusinessPartners(customerNamePrefix);
+          cardCode = businessPartners[0]?.cardCode || "";
+        }
         if (!cardCode) {
           if (options?.orderId) {
             await db.update(purchaseOrders)
@@ -322,7 +333,7 @@ export class SAPProcessor {
             throw new Error("Customer Name not found");
           }
           await db.update(purchaseOrders)
-            .set({ status: "error", sapError: "Customer Name not found" })
+            .set({ status: "reviewed", sapError: "Customer Name not found", updatedAt: new Date() })
             .where(eq(purchaseOrders.id, order.id));
           continue;
         }
@@ -381,7 +392,7 @@ export class SAPProcessor {
             throw new Error(msg);
           }
           await db.update(purchaseOrders)
-            .set({ status: "error", sapError: msg })
+            .set({ status: "reviewed", sapError: msg, updatedAt: new Date() })
             .where(eq(purchaseOrders.id, order.id));
           continue;
         }
@@ -407,7 +418,7 @@ export class SAPProcessor {
 
         if (!cardCode || lines.length === 0 || lines.some((line: any) => !line.ItemCode || !line.Quantity || (!line.Price && line.Price !== 0))) {
           await db.update(purchaseOrders)
-            .set({ status: "error", sapError: "Missing mandatory payload (CardCode, ItemCode, Quantity, Price)" })
+            .set({ status: "reviewed", sapError: "Missing mandatory payload (CardCode, ItemCode, Quantity, Price)", updatedAt: new Date() })
             .where(eq(purchaseOrders.id, order.id));
           continue;
         }
@@ -454,13 +465,16 @@ export class SAPProcessor {
             })
             .where(eq(purchaseOrders.id, order.id));
         } else {
+          // Keep the row in reviewed so the Send button stays available and
+          // the user can retry after fixing the underlying issue (bad code,
+          // missing item mapping, etc.). sapError carries the reason.
           await db.update(purchaseOrders)
-            .set({ status: "error", sapError: result.error || "Unknown error" })
+            .set({ status: "reviewed", sapError: result.error || "Unknown error", updatedAt: new Date() })
             .where(eq(purchaseOrders.id, order.id));
         }
       } catch (error: any) {
         await db.update(purchaseOrders)
-          .set({ status: "error", sapError: error.message })
+          .set({ status: "reviewed", sapError: error.message, updatedAt: new Date() })
           .where(eq(purchaseOrders.id, order.id));
       }
     }

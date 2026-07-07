@@ -119,6 +119,15 @@ try {
   try { db.run(sql`ALTER TABLE po_sap_logs ADD COLUMN request_url TEXT`); } catch { /* exists */ }
   try { db.run(sql`ALTER TABLE po_sap_logs ADD COLUMN request_method TEXT`); } catch { /* exists */ }
 
+  db.run(sql`CREATE TABLE IF NOT EXISTS customer_bp_mappings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    customer_name TEXT NOT NULL UNIQUE,
+    sap_card_code TEXT NOT NULL,
+    sap_card_name TEXT,
+    updated_at INTEGER DEFAULT (strftime('%s', 'now')),
+    created_at INTEGER DEFAULT (strftime('%s', 'now'))
+  )`);
+
   db.run(sql`CREATE TABLE IF NOT EXISTS customer_item_mappings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     customer_name TEXT NOT NULL,
@@ -275,7 +284,10 @@ app.post("/api/process/:id", async (req, res) => {
       ? latestSapLog.responseStatus
       : 502;
 
-  if (updated.status === "error") {
+  // SAP submit failure is now signalled by `sapError` being set — the PO
+  // is left in `reviewed` so the user can hit Send again after fixing
+  // whichever underlying issue was reported.
+  if (updated.sapError && updated.sapError.trim().length > 0) {
     res.status(responseCode).json({
       success: false,
       error: updated.sapError || "Failed to send PO to SAP",

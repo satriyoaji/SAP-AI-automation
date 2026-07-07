@@ -103,6 +103,15 @@ export const poTemplates = sqliteTable("po_templates", {
   updatedAt: integer("updated_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
 });
 
+export const customerBpMappings = sqliteTable("customer_bp_mappings", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  customerName: text("customer_name").notNull().unique(),
+  sapCardCode: text("sap_card_code").notNull(),
+  sapCardName: text("sap_card_name"),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
+  createdAt: integer("created_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
+});
+
 export const customerItemMappings = sqliteTable("customer_item_mappings", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   customerName: text("customer_name").notNull(),

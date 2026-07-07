@@ -1,7 +1,8 @@
 import { Router } from "express";
 import { and, eq } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { customerItemMappings, purchaseOrders } from "../db/schema.js";
+import { customerItemMappings, customerBpMappings, purchaseOrders, sapConnections } from "../db/schema.js";
+import { SapB1Service } from "../services/sapB1.js";
 
 const router = Router();
 
@@ -107,10 +108,14 @@ async function loadDetectedByCustomer(): Promise<
 }
 
 // GET /api/customer-items — list one row per detected customer, with item
-// counts and how many mappings have been saved so far.
+// counts, how many item mappings have been saved so far, and (if resolved)
+// the SAP BusinessPartner it's tied to.
 router.get("/", async (_req, res) => {
   const detected = await loadDetectedByCustomer();
-  const mappings = await db.select().from(customerItemMappings).all();
+  const [mappings, bpMappings] = await Promise.all([
+    db.select().from(customerItemMappings).all(),
+    db.select().from(customerBpMappings).all(),
+  ]);
 
   const mappedByCustomer = new Map<string, number>();
   for (const m of mappings) {
@@ -119,15 +124,128 @@ router.get("/", async (_req, res) => {
     mappedByCustomer.set(key, (mappedByCustomer.get(key) || 0) + 1);
   }
 
+  const bpByCustomer = new Map(
+    bpMappings.map((b) => [b.customerName.trim().toLowerCase(), b] as const),
+  );
+
   const list = Array.from(detected.values())
-    .map((c) => ({
-      customerName: c.customerName,
-      itemsCount: c.items.size,
-      mappedCount: mappedByCustomer.get(c.customerName.toLowerCase()) || 0,
-    }))
+    .map((c) => {
+      const bp = bpByCustomer.get(c.customerName.toLowerCase());
+      return {
+        customerName: c.customerName,
+        itemsCount: c.items.size,
+        mappedCount: mappedByCustomer.get(c.customerName.toLowerCase()) || 0,
+        sapCardCode: bp?.sapCardCode || null,
+        sapCardName: bp?.sapCardName || null,
+      };
+    })
     .sort((a, b) => a.customerName.localeCompare(b.customerName));
 
   res.json(list);
+});
+
+// GET /api/customer-items/:customerName/sap-candidates — call the SAP
+// BusinessPartners endpoint and return every candidate that matches the
+// customer name (including tenants where the extracted "PT. Foo" doesn't
+// literally appear in CardName). Requires an active SAP connection.
+router.get("/:customerName/sap-candidates", async (req, res) => {
+  const customer = normalizeCustomer(req.params.customerName);
+  if (!customer) {
+    res.status(400).json({ error: "customerName is required" });
+    return;
+  }
+
+  const conns = await db.select().from(sapConnections).where(eq(sapConnections.isActive, true)).all();
+  if (conns.length === 0) {
+    res.status(400).json({ error: "No active SAP connection" });
+    return;
+  }
+  const conn = conns[0];
+
+  const rawSessionId = req.header("x-sap-session-id");
+  const initialCookies = typeof rawSessionId === "string" && rawSessionId.trim().length > 0
+    ? [`B1SESSION=${rawSessionId.trim().replace(/^B1SESSION=/i, "")}`]
+    : undefined;
+
+  const service = new SapB1Service(
+    {
+      serviceLayerUrl: conn.serviceLayerUrl,
+      companyDB: conn.companyDB,
+      username: conn.username,
+      password: conn.password,
+    },
+    initialCookies ? { initialCookies } : undefined,
+  );
+
+  try {
+    // Prefer a query string the user typed; otherwise use the extracted name.
+    const search = typeof req.query.search === "string" && req.query.search.trim().length > 0
+      ? req.query.search.trim()
+      : customer;
+    const candidates = await service.getBusinessPartners(search, { allCandidates: true, top: 20 });
+    const existing = await db
+      .select()
+      .from(customerBpMappings)
+      .where(eq(customerBpMappings.customerName, customer))
+      .get();
+    res.json({
+      customerName: customer,
+      selectedCardCode: existing?.sapCardCode || null,
+      candidates,
+    });
+  } catch (error: any) {
+    res.status(502).json({ error: error?.message || "SAP lookup failed" });
+  }
+});
+
+// PUT /api/customer-items/:customerName/sap-bp — persist the user's BP pick
+// for this customer. Overwrites any previous choice.
+router.put("/:customerName/sap-bp", async (req, res) => {
+  const customer = normalizeCustomer(req.params.customerName);
+  const sapCardCode = typeof req.body?.sapCardCode === "string" ? req.body.sapCardCode.trim() : "";
+  const sapCardName = typeof req.body?.sapCardName === "string" ? req.body.sapCardName.trim() : "";
+  if (!customer || !sapCardCode) {
+    res.status(400).json({ error: "customerName and sapCardCode are required" });
+    return;
+  }
+
+  const existing = await db
+    .select()
+    .from(customerBpMappings)
+    .where(eq(customerBpMappings.customerName, customer))
+    .get();
+
+  if (existing) {
+    const updated = await db
+      .update(customerBpMappings)
+      .set({ sapCardCode, sapCardName: sapCardName || null, updatedAt: new Date() })
+      .where(eq(customerBpMappings.id, existing.id))
+      .returning();
+    res.json(updated[0]);
+    return;
+  }
+
+  const inserted = await db
+    .insert(customerBpMappings)
+    .values({
+      customerName: customer,
+      sapCardCode,
+      sapCardName: sapCardName || null,
+    })
+    .returning();
+  res.json(inserted[0]);
+});
+
+// DELETE /api/customer-items/:customerName/sap-bp — clear the saved BP so
+// the processor falls back to fuzzy SAP lookup on the next Send.
+router.delete("/:customerName/sap-bp", async (req, res) => {
+  const customer = normalizeCustomer(req.params.customerName);
+  if (!customer) {
+    res.status(400).json({ error: "customerName is required" });
+    return;
+  }
+  await db.delete(customerBpMappings).where(eq(customerBpMappings.customerName, customer));
+  res.json({ success: true });
 });
 
 // GET /api/customer-items/:customerName — items detected for one customer,
