@@ -42,15 +42,24 @@ router.post("/analyze", upload.array("files", 5), async (req, res) => {
   }
 
   const fullText = combinedTexts.join("\n\n");
-  const analysis = await analyzeDocument(
-    fullText,
-    files[0]?.originalname,
-    files.map((file) => ({
-      filename: file.originalname,
-      mimeType: file.mimetype,
-      data: file.buffer,
-    }))
-  );
+  let analysis;
+  try {
+    analysis = await analyzeDocument(
+      fullText,
+      files[0]?.originalname,
+      files.map((file) => ({
+        filename: file.originalname,
+        mimeType: file.mimetype,
+        data: file.buffer,
+      }))
+    );
+  } catch (err: any) {
+    res.status(502).json({
+      error: err?.message || "OpenAI analysis failed",
+      hint: "Verify OPENAI_API_KEY in server/.env is a valid key with credit.",
+    });
+    return;
+  }
 
   // Mirror the email processor's logic so manual uploads land in the same
   // state as email-fetched POs: rows with an offer sheet wait in `reviewed`

@@ -468,13 +468,18 @@ export async function analyzeDocument(
       notes: parsed.notes,
       rawText: parsed.rawText || content,
     };
-  } catch (error) {
+  } catch (error: any) {
     console.error("OpenAI analysis error:", error);
-    return {
-      isPurchaseOrder: false,
-      confidence: 0,
-      items: [],
-    };
+    // Do NOT return a silent default here. Returning
+    // {isPurchaseOrder:false, items:[]} causes the reanalyze route to
+    // overwrite previously good extracted_data with empty results whenever
+    // the OpenAI call fails (e.g. 401 invalid_api_key). Bubble up instead
+    // so callers can decide whether to persist or preserve the prior row.
+    const openaiMessage =
+      error?.response?.data?.error?.message ||
+      error?.error?.message ||
+      error?.message;
+    throw new Error(openaiMessage || "OpenAI analysis failed");
   }
 }
 

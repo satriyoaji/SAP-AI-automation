@@ -15,7 +15,7 @@ const booleanFromEnv = z.preprocess((value) => {
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   PORT: z.string().default("3001"),
-  DATABASE_URL: z.string().default("./data/db_edited.sqlite"),
+  DATABASE_URL: z.string().default("./data/db.sqlite"),
   OPENAI_API_KEY: z.string().optional().default(""),
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
