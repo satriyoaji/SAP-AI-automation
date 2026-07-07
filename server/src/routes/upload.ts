@@ -53,15 +53,15 @@ router.post("/analyze", upload.array("files", 5), async (req, res) => {
   );
 
   // Mirror the email processor's logic so manual uploads land in the same
-  // state as email-fetched POs: when AI finds an offer sheet we mark the row
-  // ready for SAP (status='processing' so SAPProcessor picks it up); when it
-  // doesn't, the row goes into 'needs_offer_sheet' so it appears on the
+  // state as email-fetched POs: rows with an offer sheet wait in `reviewed`
+  // until a human enters U_ATTNOS on the PO detail page and clicks Send;
+  // rows without one go to `needs_offer_sheet` so they appear on the
   // /needs-offer-sheet page for manual entry.
   let status: string;
   if (!analysis.isPurchaseOrder) {
     status = "detected";
   } else if (analysis.offerSheetNumber) {
-    status = "processing";
+    status = "reviewed";
   } else {
     status = "needs_offer_sheet";
   }

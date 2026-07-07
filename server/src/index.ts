@@ -302,5 +302,6 @@ app.listen(PORT, () => {
 const emailProcessor = new EmailProcessor();
 emailProcessor.start(60000); // Check every 1 minute
 
-const sapProcessor = new SAPProcessor();
-setInterval(() => sapProcessor.processPendingOrders(), 30000); // Process SAP orders every 30s
+// SAP submission is now manual-only: every push requires U_ATTNOS entered
+// on the PO detail page, so an unattended background loop can only mark
+// rows in error. Submit via POST /api/process/:id from the UI instead.

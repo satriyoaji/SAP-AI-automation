@@ -159,7 +159,7 @@ router.post("/:id/offer-sheet", async (req, res) => {
   const result = await db.update(purchaseOrders)
     .set({
       offerSheetNumber,
-      status: "processing",
+      status: "reviewed",
       updatedAt: new Date(),
     })
     .where(eq(purchaseOrders.id, id))
@@ -182,9 +182,10 @@ router.post("/:id/process", async (req, res) => {
     return;
   }
 
-  // Mark as processing so the SAP processor picks it up
+  // Move to `reviewed` so the PO shows up on the detail page's Send flow,
+  // which is the only path that provides the mandatory U_ATTNOS field.
   const result = await db.update(purchaseOrders)
-    .set({ status: "processing", updatedAt: new Date() })
+    .set({ status: "reviewed", updatedAt: new Date() })
     .where(eq(purchaseOrders.id, id))
     .returning();
 
@@ -212,11 +213,28 @@ router.post("/:id/reanalyze", async (req, res) => {
     return;
   }
 
+  // Stream progress as Server-Sent Events so the client can show which
+  // stage is currently running (loading bytes → PDF extract → OpenAI call
+  // → DB save). Set headers *once* up front, then emit `data:` frames.
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  // Encourage flush by writing an initial retry hint.
+  res.write(`retry: 10000\n\n`);
+
+  const emit = (event: string, payload: unknown) => {
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  };
+
   let messageText = "";
   let attachments: AttachmentInput[] = [];
   let source: "stored" | "email" | "text-only" = "text-only";
 
   try {
+    emit("progress", { stage: "start", message: `Re-analyzing PO #${id}` });
+
     const storedAtts = await db
       .select()
       .from(poAttachments)
@@ -226,6 +244,11 @@ router.post("/:id/reanalyze", async (req, res) => {
 
     if (storedWithBytes.length > 0) {
       source = "stored";
+      emit("progress", {
+        stage: "loading_stored_bytes",
+        message: `Loading ${storedWithBytes.length} stored attachment(s) from database`,
+        count: storedWithBytes.length,
+      });
       attachments = storedWithBytes.map((a) => ({
         filename: a.filename,
         mimeType: a.contentType,
@@ -233,25 +256,36 @@ router.post("/:id/reanalyze", async (req, res) => {
       }));
       const combinedTexts: string[] = [];
       for (const att of attachments) {
+        emit("progress", {
+          stage: "extracting_text",
+          message: `Extracting text from ${att.filename}`,
+          filename: att.filename,
+        });
         const text = await extractTextFromBuffer(att.data, att.mimeType);
         if (text) combinedTexts.push(`--- Attachment: ${att.filename} ---\n${text}`);
       }
       messageText = combinedTexts.join("\n\n");
     } else if (po.emailAccountId === 0) {
       // Manual upload with no bytes — only stored text is available.
+      emit("progress", {
+        stage: "text_only",
+        message: "No stored bytes for this manual upload; using previously stored text",
+      });
       const ai = po.aiAnalysis ? JSON.parse(po.aiAnalysis) : null;
       messageText = ai?.fullText || "";
       source = "text-only";
     } else {
       // Email row with no stored bytes — re-fetch from the inbox.
       source = "email";
+      emit("progress", { stage: "fetching_email", message: "Re-fetching original email from inbox" });
       const account = await db
         .select()
         .from(emailAccounts)
         .where(eq(emailAccounts.id, po.emailAccountId))
         .get();
       if (!account) {
-        res.status(400).json({ error: "Email account no longer exists" });
+        emit("error", { message: "Email account no longer exists" });
+        res.end();
         return;
       }
 
@@ -271,12 +305,24 @@ router.post("/:id/reanalyze", async (req, res) => {
       }
 
       if (!msg) {
-        res.status(404).json({ error: "Could not re-fetch the original email" });
+        emit("error", { message: "Could not re-fetch the original email" });
+        res.end();
         return;
       }
 
+      emit("progress", {
+        stage: "email_fetched",
+        message: `Fetched email with ${msg.attachments.length} attachment(s)`,
+        count: msg.attachments.length,
+      });
+
       const combinedTexts: string[] = [msg.body];
       for (const att of msg.attachments) {
+        emit("progress", {
+          stage: "extracting_text",
+          message: `Extracting text from ${att.filename}`,
+          filename: att.filename,
+        });
         const text = await extractTextFromBuffer(att.data, att.mimeType);
         if (text) {
           combinedTexts.push(`--- Attachment: ${att.filename} ---\n${text}`);
@@ -324,19 +370,36 @@ router.post("/:id/reanalyze", async (req, res) => {
     console.log(
       `[reanalyze] PO #${id} source=${source} attachments=${attachments.length}`
     );
+    emit("progress", {
+      stage: "analyzing",
+      message: `Calling OpenAI to analyze ${attachments.length} attachment(s)`,
+      source,
+      attachments: attachments.length,
+    });
     const analysis = await analyzeDocument(messageText, po.subject, attachments);
+    emit("progress", {
+      stage: "analyzed",
+      message: `AI analysis complete (confidence ${Math.round((analysis.confidence || 0) * 100)}%)`,
+      confidence: analysis.confidence,
+      isPurchaseOrder: analysis.isPurchaseOrder,
+      offerSheetNumber: analysis.offerSheetNumber || null,
+      itemsCount: Array.isArray(analysis.items) ? analysis.items.length : 0,
+    });
 
     // Same status logic as upload route and email processor: promote the
     // offer sheet into the top-level column and route the row to the right
-    // queue based on whether the AI found one.
+    // queue based on whether the AI found one. Rows with an offer sheet wait
+    // in `reviewed` until a human enters U_ATTNOS and hits Send in PO detail.
     let nextStatus: string;
     if (!analysis.isPurchaseOrder) {
       nextStatus = "detected";
     } else if (analysis.offerSheetNumber) {
-      nextStatus = "processing";
+      nextStatus = "reviewed";
     } else {
       nextStatus = "needs_offer_sheet";
     }
+
+    emit("progress", { stage: "saving", message: `Saving updated record (status=${nextStatus})`, status: nextStatus });
 
     const result = await db
       .update(purchaseOrders)
@@ -351,10 +414,12 @@ router.post("/:id/reanalyze", async (req, res) => {
       .where(eq(purchaseOrders.id, id))
       .returning();
 
-    res.json(result[0]);
+    emit("done", { po: result[0] });
+    res.end();
   } catch (error: any) {
     console.error(`Re-analyze failed for PO ${id}:`, error);
-    res.status(500).json({ error: error?.message || "Re-analysis failed" });
+    emit("error", { message: error?.message || "Re-analysis failed" });
+    res.end();
   }
 });
 

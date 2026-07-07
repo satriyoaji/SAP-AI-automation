@@ -84,6 +84,10 @@ export default function PODetail() {
   const [submittingOfferSheet, setSubmittingOfferSheet] = useState(false);
   const [reanalyzing, setReanalyzing] = useState(false);
   const [reanalyzeError, setReanalyzeError] = useState<string | null>(null);
+  const [reanalyzeProgress, setReanalyzeProgress] = useState<
+    Array<{ stage: string; message: string; ts: number }>
+  >([]);
+  const [reanalyzeStage, setReanalyzeStage] = useState<string>("");
   const [replacingAttId, setReplacingAttId] = useState<number | null>(null);
   const [showSapLogsModal, setShowSapLogsModal] = useState(false);
   const [sapLogs, setSapLogs] = useState<PoSapLog[]>([]);
@@ -196,19 +200,86 @@ export default function PODetail() {
     if (!po) return;
     setReanalyzing(true);
     setReanalyzeError(null);
+    setReanalyzeProgress([]);
+    setReanalyzeStage("Starting…");
+
+    const pushProgress = (stage: string, message: string) => {
+      setReanalyzeStage(message);
+      setReanalyzeProgress((prev) => [...prev, { stage, message, ts: Date.now() }]);
+    };
+
     try {
-      const res = await fetch(`/api/purchase-orders/${po.id}/reanalyze`, { method: "POST" });
-      if (!res.ok) {
+      const res = await fetch(`/api/purchase-orders/${po.id}/reanalyze`, {
+        method: "POST",
+        headers: { Accept: "text/event-stream" },
+      });
+
+      // Non-streaming error path (e.g. 404 before headers were written).
+      if (!res.ok && res.headers.get("content-type")?.includes("application/json")) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body?.error || `Re-analyze failed (${res.status})`);
       }
+
+      if (!res.body) {
+        throw new Error("Streaming not supported by this browser");
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let doneEvent: { po?: any } | null = null;
+      let errorMessage: string | null = null;
+
+      // Parse Server-Sent Events line-by-line. Frames are separated by \n\n
+      // and each frame has `event:` and `data:` lines.
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        let sep;
+        while ((sep = buffer.indexOf("\n\n")) !== -1) {
+          const rawFrame = buffer.slice(0, sep);
+          buffer = buffer.slice(sep + 2);
+          const lines = rawFrame.split("\n");
+          let eventName = "message";
+          let dataLine = "";
+          for (const line of lines) {
+            if (line.startsWith("event:")) eventName = line.slice(6).trim();
+            else if (line.startsWith("data:")) dataLine += line.slice(5).trim();
+          }
+          if (!dataLine) continue;
+          let payload: any = null;
+          try {
+            payload = JSON.parse(dataLine);
+          } catch {
+            payload = { message: dataLine };
+          }
+
+          if (eventName === "progress") {
+            pushProgress(payload?.stage || "progress", payload?.message || "");
+          } else if (eventName === "done") {
+            doneEvent = payload;
+          } else if (eventName === "error") {
+            errorMessage = payload?.message || "Re-analyze failed";
+          }
+        }
+      }
+
+      if (errorMessage) throw new Error(errorMessage);
+
       // Refetch the full detail so attachments, status, extracted data all update.
       const r = await fetch(`/api/purchase-orders/${po.id}`);
       const data = await r.json();
       setPo(data);
       setOfferSheetInput(data.offerSheetNumber || "");
+      pushProgress("done", "Done");
+      // Clear the current-stage banner shortly after so it doesn't linger.
+      setTimeout(() => setReanalyzeStage(""), 1500);
+      void doneEvent; // suppress unused var lint
     } catch (e: any) {
       setReanalyzeError(e?.message || "Re-analyze failed");
+      setReanalyzeStage("");
     }
     setReanalyzing(false);
   };
@@ -284,7 +355,11 @@ export default function PODetail() {
             title="Re-run the AI on this record. Uses the stored attachment bytes when available, otherwise re-fetches the original email."
           >
             <RefreshCw size={16} className={`mr-2 ${reanalyzing ? "animate-spin" : ""}`} />
-            {reanalyzing ? "Re-analyzing..." : "Re-analyze"}
+            {reanalyzing
+              ? reanalyzeStage
+                ? `Re-analyzing — ${reanalyzeStage.length > 32 ? reanalyzeStage.slice(0, 32) + "…" : reanalyzeStage}`
+                : "Re-analyzing…"
+              : "Re-analyze"}
           </button>
           {isPO && (
             <button
@@ -315,6 +390,40 @@ export default function PODetail() {
         <div className="mb-6 p-3 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
           <AlertCircle className="w-4 h-4 text-red-600 mt-0.5 shrink-0" />
           <p className="text-sm text-red-700">{reanalyzeError}</p>
+        </div>
+      )}
+
+      {(reanalyzing || reanalyzeProgress.length > 0) && (
+        <div className="mb-6 rounded-lg border border-blue-200 bg-blue-50/60 p-3">
+          <div className="flex items-center gap-2 text-sm font-medium text-blue-900">
+            <RefreshCw size={14} className={reanalyzing ? "animate-spin" : ""} />
+            <span>{reanalyzing ? "Re-analyze in progress" : "Re-analyze log"}</span>
+            {reanalyzeProgress.length > 0 && !reanalyzing && (
+              <button
+                onClick={() => setReanalyzeProgress([])}
+                className="ml-auto text-xs text-blue-700 hover:underline"
+              >
+                clear
+              </button>
+            )}
+          </div>
+          <ol className="mt-2 space-y-1 text-xs text-blue-900/90 font-mono max-h-48 overflow-auto">
+            {reanalyzeProgress.map((p, idx) => (
+              <li key={idx} className="flex gap-2">
+                <span className="opacity-60 shrink-0">
+                  {new Date(p.ts).toLocaleTimeString([], { hour12: false })}
+                </span>
+                <span className="opacity-60 shrink-0">[{p.stage}]</span>
+                <span className="break-all">{p.message}</span>
+              </li>
+            ))}
+            {reanalyzing && reanalyzeStage && (
+              <li className="flex gap-2 text-blue-700">
+                <span className="opacity-60 shrink-0">…</span>
+                <span className="break-all">{reanalyzeStage}</span>
+              </li>
+            )}
+          </ol>
         </div>
       )}
 
