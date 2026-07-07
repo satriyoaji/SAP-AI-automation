@@ -371,28 +371,73 @@ export class SapB1Service {
   }
 
   async getBusinessPartners(searchTerm?: string): Promise<Array<{ cardCode: string; cardName: string; cardType?: string; cardForeignName?: string }>> {
-    const escapedSearch = (searchTerm || "").trim().replace(/'/g, "''");
-    let url = `${this.credentials.serviceLayerUrl}/BusinessPartners?$select=CardCode,CardName,CardType,CardForeignName`;
-    if (escapedSearch) {
-      url += `&$filter=CardType eq 'C' and (contains(CardCode,'${escapedSearch}') or contains(CardName,'${escapedSearch}'))`;
-    } else {
-      url += `&$filter=CardType eq 'C'`;
+    const raw = (searchTerm || "").trim();
+    if (!raw) {
+      const url = `${this.credentials.serviceLayerUrl}/BusinessPartners?$select=CardCode,CardName,CardType,CardForeignName&$filter=CardType eq 'C'&$orderby=CardCode&$top=1`;
+      const response = await this.authenticatedRequest(url, { method: "GET" });
+      if (!response.ok) throw new Error(`Failed to fetch Business Partners: ${response.status}`);
+      const result = await response.json();
+      return (result.value || []).map((bp: any) => ({
+        cardCode: bp.CardCode,
+        cardName: bp.CardName,
+        cardType: bp.CardType,
+        cardForeignName: bp.CardForeignName,
+      }));
     }
-    url += "&$orderby=CardCode&$top=1";
 
-    const response = await this.authenticatedRequest(url, { method: "GET" });
+    // Build progressively-looser candidates so we can match Indonesian
+    // "PT. Foo Bar" companies whose SAP CardName is often stored as
+    // "Foo Bar, PT." (prefix moved to suffix) or "Foo Bar Tbk". Also
+    // fall through to searching CardForeignName which usually mirrors
+    // the customer-facing display form (e.g. "PT. ZEBRA ASABA INDUSTRIES").
+    const stripped = raw
+      .replace(/^(PT\.?|CV\.?|UD\.?|PD\.?)\s+/i, "")
+      .replace(/\s*[,\-]?\s*(Tbk\.?|Persero|Persero\.?)\s*$/i, "")
+      .trim();
+    const tokens = stripped.split(/\s+/).filter(Boolean);
+    // Distinctive core name = first 2 tokens (e.g. "ZEBRA ASABA") — usually
+    // enough to narrow the match without being too fuzzy.
+    const core = tokens.slice(0, 2).join(" ");
+    const first = tokens[0] || "";
 
-    if (!response.ok) {
-      throw new Error(`Failed to fetch Business Partners: ${response.status}`);
+    const escape = (s: string) => s.replace(/'/g, "''");
+    const candidates = Array.from(
+      new Set(
+        [raw, stripped, core, first]
+          .map((c) => c.trim())
+          .filter((c) => c.length > 0),
+      ),
+    );
+
+    for (const term of candidates) {
+      const escaped = escape(term);
+      const filter =
+        `CardType eq 'C' and (` +
+          `contains(CardCode,'${escaped}') or ` +
+          `contains(CardName,'${escaped}') or ` +
+          `contains(CardForeignName,'${escaped}')` +
+        `)`;
+      const url = `${this.credentials.serviceLayerUrl}/BusinessPartners?$select=CardCode,CardName,CardType,CardForeignName&$filter=${encodeURIComponent(filter)}&$orderby=CardCode&$top=5`;
+
+      const response = await this.authenticatedRequest(url, { method: "GET" });
+      if (!response.ok) throw new Error(`Failed to fetch Business Partners: ${response.status}`);
+      const result = await response.json();
+      const rows = result.value || [];
+      if (rows.length > 0) {
+        console.log(
+          `[sap] getBusinessPartners resolved "${raw}" via candidate "${term}" → ${rows[0].CardCode} (${rows[0].CardName})`,
+        );
+        return rows.map((bp: any) => ({
+          cardCode: bp.CardCode,
+          cardName: bp.CardName,
+          cardType: bp.CardType,
+          cardForeignName: bp.CardForeignName,
+        }));
+      }
     }
 
-    const result = await response.json();
-    return (result.value || []).map((bp: any) => ({
-      cardCode: bp.CardCode,
-      cardName: bp.CardName,
-      cardType: bp.CardType,
-      cardForeignName: bp.CardForeignName,
-    }));
+    console.log(`[sap] getBusinessPartners no match for "${raw}" (candidates tried: ${candidates.join(" | ")})`);
+    return [];
   }
 
   async getItems(search?: string): Promise<Array<{ itemCode: string; itemName: string }>> {
